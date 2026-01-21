@@ -25,6 +25,7 @@ app.get("/", (req, res) => {
 
 const emailToSocketMap = new Map();
 const socketidToEmailMap = new Map();
+const roomToUsersMap = new Map(); // Track all users in each room
 
 io.on("connection", (socket) => {
   console.log("A user connected:", socket.id);
@@ -39,10 +40,29 @@ io.on("connection", (socket) => {
 
     emailToSocketMap.set(email, socket.id);
     socketidToEmailMap.set(socket.id, email);
+    
+    // Get existing users in the room
+    const existingUsers = roomToUsersMap.get(roomId) || [];
+    
+    // Notify the new user about all existing users
+    io.to(socket.id).emit("room:users", { users: existingUsers });
 
-    io.to(roomId).emit("user:join", { email, id: socket.id });
+    // Notify all existing users about the new user
+    existingUsers.forEach((user) => {
+      io.to(user.id).emit("user:joined", { 
+        email: email, 
+        id: socket.id 
+      });
+    });
 
     socket.join(roomId);
+    
+    // Add new user to room tracking
+    existingUsers.push({ email, id: socket.id });
+    roomToUsersMap.set(roomId, existingUsers);
+    
+    // Store roomId in socket for cleanup
+    socket.roomId = roomId;
 
     io.to(socket.id).emit("room:join", {
       message: `You joined room ${roomId}`,
@@ -75,10 +95,32 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     const email = socketidToEmailMap.get(socket.id);
+    const roomId = socket.roomId;
+    
     if (email) {
       console.log(`User disconnected: ${email} (${socket.id})`);
       emailToSocketMap.delete(email);
       socketidToEmailMap.delete(socket.id);
+      
+      // Remove user from room tracking
+      if (roomId) {
+        const users = roomToUsersMap.get(roomId) || [];
+        const updatedUsers = users.filter((user) => user.id !== socket.id);
+        
+        if (updatedUsers.length > 0) {
+          roomToUsersMap.set(roomId, updatedUsers);
+        } else {
+          roomToUsersMap.delete(roomId);
+        }
+        
+        // Notify remaining users
+        updatedUsers.forEach((user) => {
+          io.to(user.id).emit("user:left", { 
+            email: email, 
+            id: socket.id 
+          });
+        });
+      }
     } else {
       console.log(`User disconnected: undefined (${socket.id})`);
     }
